@@ -15,8 +15,10 @@ const (
 			{{range $import := $.Options.Imports}}{{- if not (in $import "\"time\"" "\"sync/atomic\"" "\"github.com/gojuno/minimock\"")}}
 				{{$import}}{{end}}{{end}}
 			{{$.Options.SourcePackageAlias}} "{{$.SourcePackage.PkgPath}}"
+			mm_reflect "reflect"
 			mm_atomic "sync/atomic"
 			mm_time "time"
+			mm_params "github.com/gojuno/minimock/internal/params"
 			"github.com/gojuno/minimock"
 		)
 	`
@@ -24,6 +26,7 @@ const (
 	// BodyTemplate is used to generate mock body
 	BodyTemplate = `
 		{{ $mock := (title (printf "%sMock" $.Interface.Name)) }}
+		{{ $mockArgs := (printf "m%sMockArgs" $.Interface.Name) }}
 
 		// {{$mock}} implements {{$.Interface.Type}}
 		type {{$mock}} struct {
@@ -34,6 +37,7 @@ const (
 				before{{$method.Name}}Counter uint64
 				{{$method.Name}}Mock m{{$mock}}{{$method.Name}}
 			{{ end }}
+			MinimockArg {{$mockArgs}}
 		}
 
 		// New{{$mock}} returns a mock for {{$.Interface.Type}}
@@ -48,6 +52,17 @@ const (
 			{{ end }}
 			return m
 		}
+
+		type {{$mockArgs}} struct {
+			matchers mm_params.Matchers
+		}
+
+		{{ range $ptype := (distinctParameterTypeNames $.Interface.Methods) }}
+			func (m *{{$mockArgs}}) Matched{{(identifierFromType $ptype)}}(matches func({{$ptype}}) bool) (z {{$ptype}}) {
+				m.matchers.AddMatchFunc(matches)
+				return z
+			}
+		{{ end }}
 
 		{{ range $method := $.Interface.Methods }}
 			{{ $m := (printf "mm%s" $method.Name) }}
@@ -65,7 +80,8 @@ const (
 			// {{$mock}}{{$method.Name}}Expectation specifies expectation struct of the {{$.Interface.Name}}.{{$method.Name}}
 			type {{$mock}}{{$method.Name}}Expectation struct {
 				mock *{{$mock}}
-				{{ if $method.HasParams }}  params *{{$mock}}{{$method.Name}}Params  {{end}}
+				{{ if $method.HasParams }} params *{{$mock}}{{$method.Name}}Params
+					matchers *{{$mock}}{{$method.Name}}Matchers {{end}}
 				{{ if $method.HasResults }} results *{{$mock}}{{$method.Name}}Results {{end}}
 				Counter uint64
 			}
@@ -73,6 +89,11 @@ const (
 			{{if $method.HasParams }}
 				// {{$mock}}{{$method.Name}}Params contains parameters of the {{$.Interface.Name}}.{{$method.Name}}
 				type {{$mock}}{{$method.Name}}Params {{$method.ParamsStruct}}
+
+				type {{$mock}}{{$method.Name}}Matchers struct {
+					{{ range $p := $method.Params }} 
+						{{$p.Name}} func({{$p.Type}}) bool{{ end }}
+				}
 			{{end}}
 
 			{{if $method.HasResults }}
@@ -135,13 +156,14 @@ const (
 					if {{$m}}.mock.func{{$method.Name}} != nil {
 						{{$m}}.mock.t.Fatalf("{{$mock}}.{{$method.Name}} mock is already set by Set")
 					}
-
-					expectation := &{{$mock}}{{$method.Name}}Expectation{
-						mock: {{$m}}.mock,
-						params: &{{$mock}}{{$method.Name}}Params{ {{ $method.ParamsNames }} },
-					}
-					{{$m}}.expectations = append({{$m}}.expectations, expectation)
-					return expectation
+					mm_m, mm_e := &{{$mock}}{{$method.Name}}Matchers{}, &{{$mock}}{{$method.Name}}Params{}
+					{{$m}}.mock.MinimockArg.matchers.Expectation({{$m}}.mock.t, "{{$mock}}.{{$method.Name}}").
+					{{range $p := $method.Params}}Next({{$p.Name}}, &mm_m.{{$p.Name}}, &mm_e.{{$p.Name}}).
+					{{end}}
+					Done()
+					mm_me := &{{$mock}}{{$method.Name}}Expectation{mock: {{$m}}.mock, params: mm_e, matchers: mm_m}
+					{{$m}}.expectations = append({{$m}}.expectations, mm_me)
+					return mm_me
 				}
 
 				// Then sets up {{$.Interface.Name}}.{{$method.Name}} return parameters for the expectation previously defined by the When method
@@ -165,7 +187,7 @@ const (
 					{{$m}}.{{$method.Name}}Mock.mutex.Unlock()
 
 					for _, e := range {{$m}}.{{$method.Name}}Mock.expectations {
-						if minimock.Equal(e.params, params) {
+						if true {{range $p := $method.Params}}&& (e.matchers.{{$p.Name}} != nil && e.matchers.{{$p.Name}}({{$p.Name}}) || e.matchers.{{$p.Name}} == nil && minimock.Equal(e.params.{{$p.Name}}, {{$p.Name}})) {{end}}{
 							mm_atomic.AddUint64(&e.Counter, 1)
 							{{$method.ReturnStruct "e.results" -}}
 						}

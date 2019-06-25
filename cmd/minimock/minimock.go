@@ -10,6 +10,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/template"
 
@@ -32,6 +33,23 @@ var helpers = template.FuncMap{
 			}
 		}
 		return false
+	},
+	"distinctParameterTypeNames": func(methodsByName map[string]generator.Method) []string {
+		types := map[string]bool{}
+		for _, m := range methodsByName {
+			for _, p := range m.Params {
+				types[p.Type] = true
+			}
+		}
+		ts := make([]string, 0, len(types))
+		for t := range types {
+			ts = append(ts, t)
+		}
+		sort.Strings(ts)
+		return ts
+	},
+	"identifierFromType": func(t string) string {
+		return strings.Replace(strings.Title(t), ".", "", -1)
 	},
 }
 
